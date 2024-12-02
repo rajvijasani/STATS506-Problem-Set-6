@@ -1,0 +1,114 @@
+---
+title: "Problem Set 6"
+author: "Rajvi Jasani"
+format: 
+  html: 
+    toc: true
+    embed-resources: true
+  pdf: default
+---
+
+## GitHub Repository
+
+This is the link to my GitHub repository <https://github.com/rajvijasani/STATS506-Problem-Set-6.git>
+
+## Stratified Bootstrapping
+```{r}
+library(DBI)
+lahman <- dbConnect(RSQLite::SQLite(), "data/lahman_1871-2022.sqlite")
+rf <- dbGetQuery(lahman,
+                 "SELECT teamID, AVG(3*(PO + A)/InnOuts) as teamRF
+                    FROM fielding
+                GROUP BY teamID")
+fieldingData <- dbGetQuery(lahman, "SELECT * FROM fielding")
+```
+Non Parallel
+```{r}
+boot <- function(data, n = 1000) {
+  teamID <- unique(data$teamID)
+  se <- lapply(teamID, function(teamID) {
+    teamData <- data[data$teamID == teamID, ]
+    bootSamples <- replicate(n, {
+      resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace = TRUE), ]
+      mean(3 * (resample$PO + resample$A) / resample$InnOuts, na.rm = TRUE)
+    })
+    sd(bootSamples, na.rm = TRUE)
+  })
+  names(se) <- teamID
+  return(unlist(se))
+}
+
+set.seed(223)
+system.time({
+  rf_1 <- boot(fieldingData)
+})
+```
+Using `parallel` package
+```{r}
+library(parallel)
+bootParallel <- function(data, n = 1000) {
+  teamID <- unique(data$teamID)
+  cl <- makeCluster(4)
+  # exporting data and all environment variables to cluster workers
+  clusterExport(cl, varlist = c("data", "n"), envir = environment())
+  
+  se <- parLapply(cl, teamID, function(teamID) {
+    teamData <- data[data$teamID == teamID, ]
+    if (nrow(teamData) > 0) {
+      bootSamples <- replicate(n, {
+        resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace =
+                                      TRUE), ]
+        mean(3 * (resample$PO + resample$A) / resample$InnOuts, na.rm = TRUE)
+      })
+      sd(bootSamples, na.rm = TRUE)
+    } else {
+      NA
+    }
+  })
+  stopCluster(cl)
+  gc()
+  names(se) <- teamID
+  return(unlist(se))
+}
+
+set.seed(223)
+system.time({
+  rf_2 <- bootParallel(fieldingData)
+})
+```
+Using `future` package
+```{r}
+library(future)
+set.seed(223)
+plan(multisession)
+bootFuture <- function(data, n = 1000) {
+  teamID <- unique(data$teamID)
+  
+  seFutures <- vector("list", length(teamID))
+  names(seFutures) <- teamID
+  
+  for (i in seq_along(teamID)) {
+    seFutures[[i]] <- future({
+      teamData <- data[data$teamID == teamID[i], ]
+      if (nrow(teamData) > 0) {
+        bootSamples <- replicate(n, {
+          resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace = TRUE), ]
+          mean(3 * (resample$PO + resample$A) / resample$InnOuts,
+               na.rm = TRUE)
+        })
+        sd(bootSamples, na.rm = TRUE)
+      } else {
+        NA
+      }
+    }, seed = TRUE)
+  }
+  se <- sapply(seFutures, value)
+  return(se)
+}
+
+system.time({
+  rf_3 <- bootFuture(fieldingData)
+})
+plan(sequential)
+```
+*Attribution of Source:* Used ChatGPT to find a way to resample data based on teams.
