@@ -22,65 +22,107 @@ rf <- dbGetQuery(lahman,
                 GROUP BY teamID")
 fieldingData <- dbGetQuery(lahman, "SELECT * FROM fielding")
 ```
-Non Parallel
+a.
+
+1. Sequential
 ```{r}
+#' Bootstrapping using sequential method 
+#'
+#' @param data fielding table from lahman database
+#' @param n number of bootstrap samples DEFAULT 1000
+#'
+#' @return standard error in calculation of rf for each team
 boot <- function(data, n = 1000) {
   teamID <- unique(data$teamID)
   se <- lapply(teamID, function(teamID) {
     teamData <- data[data$teamID == teamID, ]
-    bootSamples <- replicate(n, {
-      resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace = TRUE), ]
-      mean(3 * (resample$PO + resample$A) / resample$InnOuts, na.rm = TRUE)
-    })
-    sd(bootSamples, na.rm = TRUE)
+    # to ensure calculation for only teams that have corresponding data
+    if (nrow(teamData) > 0) {
+      # bootSamples have the average rf for each bootstrap sample
+      bootSamples <- replicate(n, {
+        # sampling data with replacement to create a bootstrap sample
+        resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace = TRUE), ]
+        # calculating rf for each bootstrap sample
+        mean(3 * (resample$PO + resample$A) / resample$InnOuts, na.rm = TRUE)
+      })
+      # calculating and returning the standard deviation (standard error)
+      # in rf for each team
+      return(sd(bootSamples, na.rm = TRUE))
+    }
+    else {
+      NA
+    }
   })
+  # naming the se values with corresponding team ids and returning the vector
   names(se) <- teamID
   return(unlist(se))
 }
 
 set.seed(223)
-system.time({
-  rf_1 <- boot(fieldingData)
+timeSequential <- system.time({
+  seSequential <- boot(fieldingData)
 })
 ```
-Using `parallel` package
+2. Using `parallel` package
 ```{r}
 library(parallel)
+#' Bootstrapping using parallel package
+#'
+#' @param data fielding table from lahman database
+#' @param n number of bootstrap samples. DEFAULT 1000
+#'
+#' @return standard error in calculation of rf for each team
 bootParallel <- function(data, n = 1000) {
   teamID <- unique(data$teamID)
-  cl <- makeCluster(4)
+  # 4 core CPU, so we will use 3 cores
+  cl <- makeCluster(3)
   # exporting data and all environment variables to cluster workers
   clusterExport(cl, varlist = c("data", "n"), envir = environment())
   
   se <- parLapply(cl, teamID, function(teamID) {
     teamData <- data[data$teamID == teamID, ]
+    # to ensure calculation for only teams that have corresponding data
     if (nrow(teamData) > 0) {
+      # bootSamples have the average rf for each bootstrap sample
       bootSamples <- replicate(n, {
+        # sampling data with replacement to create a bootstrap sample
         resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace =
                                       TRUE), ]
+        # calculating rf for each bootstrap sample
         mean(3 * (resample$PO + resample$A) / resample$InnOuts, na.rm = TRUE)
       })
-      sd(bootSamples, na.rm = TRUE)
-    } else {
+      # calculating and returning the standard deviation (standard error)
+      # in rf for each team
+      return(sd(bootSamples, na.rm = TRUE))
+    }
+    else {
       NA
     }
   })
   stopCluster(cl)
   gc()
+  # naming the se values with corresponding team ids and returning the vector
   names(se) <- teamID
   return(unlist(se))
 }
 
 set.seed(223)
-system.time({
-  rf_2 <- bootParallel(fieldingData)
+timeParallel <- system.time({
+  seParallel <- bootParallel(fieldingData)
 })
 ```
-Using `future` package
+3. Using `future` package
 ```{r}
+#| warning: false
 library(future)
 set.seed(223)
 plan(multisession)
+#' Bootstrapping using future package
+#'
+#' @param data fielding table from lahman database
+#' @param n number of bootstrap samples. DEFAULT 1000
+#'
+#' @return standard error in calculation of rf for each team
 bootFuture <- function(data, n = 1000) {
   teamID <- unique(data$teamID)
   
@@ -90,13 +132,19 @@ bootFuture <- function(data, n = 1000) {
   for (i in seq_along(teamID)) {
     seFutures[[i]] <- future({
       teamData <- data[data$teamID == teamID[i], ]
+      # to ensure calculation for only teams that have corresponding data
       if (nrow(teamData) > 0) {
+        # bootSamples have the average rf for each bootstrap sample
         bootSamples <- replicate(n, {
+          # sampling data with replacement to create a bootstrap sample
           resample <- teamData[sample(1:nrow(teamData), nrow(teamData), replace = TRUE), ]
+          # calculating rf for each bootstrap sample
           mean(3 * (resample$PO + resample$A) / resample$InnOuts,
                na.rm = TRUE)
         })
-        sd(bootSamples, na.rm = TRUE)
+        # calculating and returning the standard deviation (standard error)
+        # in rf for each team
+        return(sd(bootSamples, na.rm = TRUE))
       } else {
         NA
       }
@@ -106,9 +154,36 @@ bootFuture <- function(data, n = 1000) {
   return(se)
 }
 
-system.time({
-  rf_3 <- bootFuture(fieldingData)
+timeFuture <- system.time({
+  seFuture <- bootFuture(fieldingData)
 })
 plan(sequential)
 ```
-*Attribution of Source:* Used ChatGPT to find a way to resample data based on teams.
+*Attribution of Source:* Used ChatGPT to find a way to resample data based on teams, resolve warning messages while using parallel and future packages, and help with syntax when using futures.
+
+b.
+```{r}
+results <- data.frame(
+  teamID = rf$teamID,
+  teamRF = rf$teamRF,
+  seSequential = seSequential[rf$teamID],
+  seParallel = seParallel[rf$teamID],
+  seFuture = seFuture[rf$teamID]
+)
+results <- results[order(-results$teamRF), ]
+print(head(results, 10))
+```
+c.
+```{r}
+print(data.frame(
+  Method = c("Sequential", "Paralell", "Future"),
+  Elapsed = c(timeSequential["elapsed"], timeParallel["elapsed"], timeFuture["elapsed"])
+))
+```
+Sequential Method: The sequential method took the longest time, i.e. 370.79 seconds. This method processes each task in a single thread without leveraging parallelism, resulting in slower performance, especially with larger datasets.
+
+Parallel Method: The parallel method took ~19.5% less time, i.e. 298.41 seconds. By utilizing multiple cores, it efficiently divides the workload, but some overhead is still present due to the need to manage multiple processes.
+
+Future Method: The future method achieved the fastest performance which was ~68.7% faster than sequential, i.e. 116.16 seconds. This approach leverages parallel execution with enhanced flexibility and efficient task management, making it ideal for more complex workflows or distributed environments.
+
+Note: The times I have taken into consideration for comparison may be different than the final execution displayed above but the conclusion is more or less same.
